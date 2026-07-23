@@ -3,6 +3,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { describe, it } from "node:test";
+import { buildCompletionKey } from "../../src/runs/background/completion-dedupe.ts";
 import { createResultWatcher } from "../../src/runs/background/result-watcher.ts";
 import { createNestedRoute, writeNestedEvent } from "../../src/runs/shared/nested-events.ts";
 import type { SubagentState } from "../../src/shared/types.ts";
@@ -947,6 +948,32 @@ describe("result watcher", () => {
 			assert.equal(emitted.filter((entry) => entry.event === "subagent:result-intercom").length, 1);
 			assert.equal(emitted.some((entry) => entry.event === "subagent:async-complete"), true);
 			assert.equal(logged.some((entry) => /Subagent async grouped result intercom delivery was not acknowledged/.test(String(entry[0] ?? ""))), true);
+		} finally {
+			fs.rmSync(resultsDir, { recursive: true, force: true });
+		}
+	});
+
+	it("delivers a result when a previous duplicate key has expired", async () => {
+		const resultsDir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-result-watcher-expired-"));
+		try {
+			const state = createState();
+			state.currentSessionId = "session-1";
+			const emitted: string[] = [];
+			const watcher = createResultWatcher({ events: { on: () => () => {}, emit(event) { emitted.push(event); } } }, state, resultsDir, 60_000);
+			const resultFile = "expired.json";
+			const result = { sessionId: "session-1", agent: "worker", success: true, summary: "new result", timestamp: 123 };
+			const resultPath = path.join(resultsDir, resultFile);
+			fs.writeFileSync(resultPath, JSON.stringify(result), "utf-8");
+			state.completionSeen.set(buildCompletionKey(result, `result:${resultFile}`), Date.now() - 61_000);
+			try {
+				watcher.primeExistingResults();
+				await new Promise((resolve) => setTimeout(resolve, 75));
+			} finally {
+				watcher.stopResultWatcher();
+			}
+
+			assert.equal(fs.existsSync(resultPath), false);
+			assert.deepEqual(emitted, ["subagent:async-complete"]);
 		} finally {
 			fs.rmSync(resultsDir, { recursive: true, force: true });
 		}

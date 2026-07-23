@@ -150,7 +150,10 @@ export function createResultWatcher(
 			}
 
 			const completionKey = buildCompletionKey(data, `result:${file}`);
-			if (state.completionSeen.has(completionKey)) {
+			const lastSeenAt = state.completionSeen.get(completionKey);
+			if (lastSeenAt !== undefined && Date.now() - lastSeenAt > completionTtlMs) {
+				state.completionSeen.delete(completionKey);
+			} else if (lastSeenAt !== undefined) {
 				if (!ownsSession(data.sessionId, epoch) || !fsApi.existsSync(resultPath)) return;
 				try {
 					fsApi.unlinkSync(resultPath);
